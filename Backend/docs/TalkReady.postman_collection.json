@@ -1,0 +1,280 @@
+{
+  "info": {
+    "_postman_id": "89bd3f39-4af3-4ee7-8fa9-82232a9a9fe2",
+    "name": "TalkReady Backend API",
+    "description": "REST requests for TalkReady. Run the seed command first to create the admin account. Store student and admin JWTs in the collection variables.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:5000" },
+    { "key": "token", "value": "" },
+    { "key": "adminToken", "value": "" },
+    { "key": "studentEmail", "value": "student@example.test" },
+    { "key": "studentPassword", "value": "change-this-password" },
+    { "key": "adminEmail", "value": "admin@example.com" },
+    { "key": "adminPassword", "value": "change-this-password" },
+    { "key": "noteSetId", "value": "" },
+    { "key": "sessionId", "value": "" },
+    { "key": "questionId", "value": "" },
+    { "key": "studentId", "value": "" },
+    { "key": "modelPackSha256", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health check",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/health"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Register student",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Student\",\n  \"email\": \"{{studentEmail}}\",\n  \"password\": \"{{studentPassword}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/register"
+          }
+        },
+        {
+          "name": "Login student",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.success && body.data.token) pm.collectionVariables.set('token', body.data.token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{studentEmail}}\",\n  \"password\": \"{{studentPassword}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/login"
+          }
+        },
+        {
+          "name": "Login seeded admin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.success && body.data.token) pm.collectionVariables.set('adminToken', body.data.token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/login"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Student",
+      "auth": {
+        "type": "bearer",
+        "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+      },
+      "item": [
+        {
+          "name": "Get current user",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/auth/me" }
+        },
+        {
+          "name": "Update RAM tier",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"ramTier\": \"3GB\"\n}" },
+            "url": "{{baseUrl}}/api/auth/settings"
+          }
+        },
+        {
+          "name": "Purge personal data",
+          "request": { "method": "DELETE", "url": "{{baseUrl}}/api/auth/purge-data" }
+        },
+        {
+          "name": "Upload pasted notes",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Example notes\",\n  \"text\": \"Paste at least 80 words of useful notes here.\"\n}"
+            },
+            "url": "{{baseUrl}}/api/notes/upload"
+          }
+        },
+        {
+          "name": "Upload notes file",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": "" }
+              ]
+            },
+            "url": "{{baseUrl}}/api/notes/upload"
+          }
+        },
+        {
+          "name": "List note sets",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/notes" }
+        },
+        {
+          "name": "Get note set",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/notes/{{noteSetId}}" }
+        },
+        {
+          "name": "Delete owned note set",
+          "request": { "method": "DELETE", "url": "{{baseUrl}}/api/notes/{{noteSetId}}" }
+        },
+        {
+          "name": "Start interview",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"noteSetId\": \"{{noteSetId}}\",\n  \"style\": \"Standard\",\n  \"questionCount\": 5,\n  \"mode\": \"text\"\n}"
+            },
+            "url": "{{baseUrl}}/api/interview/start"
+          }
+        },
+        {
+          "name": "List interview sessions",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/interview/sessions" }
+        },
+        {
+          "name": "Get session report",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/interview/{{sessionId}}/report" }
+        },
+        {
+          "name": "Retry answer",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transcript\": \"A cache keeps frequently used data close.\",\n  \"durationSec\": 30\n}"
+            },
+            "url": "{{baseUrl}}/api/interview/{{sessionId}}/retry/{{questionId}}"
+          }
+        },
+        {
+          "name": "Get progress dashboard",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/progress/me" }
+        },
+        {
+          "name": "Score skill drill",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"drillType\": \"thirty_second\",\n  \"transcript\": \"Replace with at least 40 spoken words.\",\n  \"durationSec\": 30\n}"
+            },
+            "url": "{{baseUrl}}/api/drills/score"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "auth": {
+        "type": "bearer",
+        "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }]
+      },
+      "item": [
+        {
+          "name": "Analytics",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/admin/analytics" }
+        },
+        {
+          "name": "Get rubric",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/admin/rubric" }
+        },
+        {
+          "name": "Update rubric",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contentWeight\": 0.6,\n  \"deliveryWeight\": 0.4,\n  \"aiPackMode\": \"base\",\n  \"ramTierHints\": {\n    \"3GB\": \"Use the base model pack.\",\n    \"4-6GB\": \"The mid model pack is recommended.\",\n    \"8GB+\": \"The high model pack is available.\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/admin/rubric"
+          }
+        },
+        {
+          "name": "List students",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/admin/students" }
+        },
+        {
+          "name": "Student session history",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/admin/students/{{studentId}}/history" }
+        },
+        {
+          "name": "Export CSV",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/admin/export-csv" }
+        },
+        {
+          "name": "Upload prebuilt notes",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "files", "type": "file", "src": "" }
+              ]
+            },
+            "url": "{{baseUrl}}/api/admin/notes-pack"
+          }
+        },
+        {
+          "name": "Upload verified model pack",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": "" },
+                { "key": "sha256", "value": "{{modelPackSha256}}", "type": "text" }
+              ]
+            },
+            "url": "{{baseUrl}}/api/admin/model-pack"
+          }
+        }
+      ]
+    }
+  ]
+}

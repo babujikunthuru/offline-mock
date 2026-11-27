@@ -36,7 +36,7 @@ Flow: WARMUP -> ASK -> LISTEN -> THINKING -> REACT -> (FOLLOWUP | HINT | NEXT) -
 
 SOCKET EVENTS
 Client -> Server
-- interview:start      { noteSetId, style, questionCount, mode }   ack -> { sessionId }
+- interview:start      { noteSetId, style, questionCount, mode, sessionId? }   ack -> { sessionId }
 - audio:chunk          binary ArrayBuffer of 16kHz mono PCM16 (only during LISTEN)
 - interview:tts_done   { state }               [ADDED] client finished playing TTS, server may enter LISTEN
 - interview:listen_end { reason: 'silence' | 'manual' }   [ADDED] client VAD detected end of turn
@@ -45,6 +45,7 @@ Client -> Server
 Server -> Client
 - interview:state      { sessionId, state, text, audioBase64, hintLevel, coaching, questionIndex, totalQuestions, remainingSec }
                        (audioBase64 may be null; the client then falls back to browser speech synthesis)
+- interview:timer      { sessionId, remainingSec }   [ADDED] periodic server timer updates
 - interview:transcript { text, isFinal, words:[{w,start,end,conf}] }   [ADDED] live captions
 - interview:error      { code, message }       [ADDED]
 - admin:live_feed      { sessionId, studentId, studentName, questionIndex, totalQuestions, liveWpm, runningScore, state, updatedAt }   (admin room only)
@@ -54,23 +55,24 @@ POST   /api/auth/register           public   { name, email, password }  (always 
 POST   /api/auth/login              public   { email, password } -> { token, user:{ id,name,email,role,ramTier } }
 GET    /api/auth/me                 any
 PUT    /api/auth/settings           any      { ramTier }   [ADDED]
-DELETE /api/auth/purge-data         student  deletes personal notes, chunks, questions, sessions, answers, progress
-POST   /api/notes/upload            both     multipart(file .md/.txt/.pdf) OR JSON { title, text } -> { noteSet, topicCount, questionCount }
+DELETE /api/auth/purge-data        student  deletes personal notes, chunks, questions, sessions, answers, progress, and daily practice
+POST   /api/notes/upload            both     multipart(file .md/.txt/.pdf, max 5 MB, extension and MIME must match) OR JSON { title, text } -> { noteSet, topicCount, questionCount }
 GET    /api/notes                   both     prebuilt + own note sets   [ADDED]
 GET    /api/notes/:id               both     note set + topic list      [ADDED]
 DELETE /api/notes/:id               owner    [ADDED]
-POST   /api/interview/start         student  same payload as the socket event; creates session + question queue [equivalent REST path]
-POST   /api/interview/:id/retry/:qid student { transcript, wpm, fillerCount, longPauseCount, avgConfidence, durationSec } -> { newAnswer, previousAnswer, delta }
+POST   /api/interview/start         student  same payload as the socket event; returns session + question queue [equivalent REST path]
+POST   /api/interview/:id/retry/:qid student { transcript, words?, durationSec?, usedHintLevel? } -> { newAnswer, previousAnswer, delta }
 GET    /api/interview/sessions      student  history list   [ADDED]
 GET    /api/interview/:id/report    student  full report with answers, coaching, sayItBetter   [ADDED]
-GET    /api/progress/me             student  { streakDays, weakTopics:[top 3], topicStats[] }   [ADDED]
-GET    /api/admin/analytics         admin    { batchAvgScore, weakTopicDistribution, activeSessions }
-GET    /api/admin/export-csv        admin    streams CSV
-GET    /api/admin/rubric            admin    [ADDED]
-PUT    /api/admin/rubric            admin    { contentWeight, deliveryWeight, phraseBanks?, aiPackMode?, ramTier? }
-GET    /api/admin/students          admin    [ADDED]
-GET    /api/admin/students/:id/history admin [ADDED]
-POST   /api/admin/notes-pack        admin    upload global prebuilt notes   [ADDED]
+GET    /api/progress/me             student  { streakDays, practicedToday, weakTopics:[top 3], topicStats[], recentSessions:[last 5] }   [ADDED]
+POST   /api/drills/score            student  { drillType, transcript, durationSec?, wpm?, fillerCount?, words? } -> { score, passed, feedback }   [ADDED]
+GET    /api/admin/analytics         admin    { batchAvgScore, weakTopicDistribution, activeSessions, totals }
+GET    /api/admin/export-csv        admin    streams Excel-safe CSV
+GET    /api/admin/rubric            admin    weights, phrase banks, AI mode, RAM-tier hints
+PUT    /api/admin/rubric            admin    { contentWeight, deliveryWeight, phraseBanks?, aiPackMode?, ramTierHints? }
+GET    /api/admin/students          admin    student list
+GET    /api/admin/students/:id/history admin all sessions with scores
+POST   /api/admin/notes-pack        admin    upload one or more prebuilt notes
 POST   /api/admin/model-pack        admin    multipart file + { sha256 } -> verifies checksum   [ADDED]
 GET    /api/health                  public   { status:'ok', mongo:true|false, aiBridge:true|false }
 
@@ -91,7 +93,7 @@ Base URL http://127.0.0.1:8000
 - POST /tts       { text, speed }                                -> { audioBase64 }
 - POST /embed     { texts:[string] }                             -> { vectors:[[number]] }
 - POST /generate  { prompt, maxTokens }                          -> { text }
-The backend MUST keep working when the bridge is down: embeddings fall back to TF-IDF cosine similarity, TTS returns null (browser speech is used), STT returns an error event and the UI switches to text mode, "Say It Better" uses a rule-based template.
+The backend MUST keep working when the bridge is down: embeddings fall back to TF-IDF cosine similarity, TTS reports unavailable (browser speech is used), STT reports unavailable and the UI switches to text mode, "Say It Better" uses a rule-based template. Run the local stub with `npm run mock:bridge`.
 ```
 
 ---
@@ -137,16 +139,16 @@ Acceptance checks:
 Implement all 8 Mongoose models with timestamps, validation and the indexes below.
 
 users: name, email (unique, lowercase), passwordHash, role enum('student','admin') default 'student', ramTier enum('3GB','4-6GB','8GB+') default '3GB', createdAt.
-notesets: title, source enum('prebuilt','user'), ownerId ref User (null for prebuilt), level, language, topicCount, questionCount, createdAt. Index ownerId.
-chunks: noteSetId (indexed), topic, text (80-200 words), keywords [String], hasDefinition Boolean, hasExample Boolean, embedding [Number].
+notesets: title, source enum('prebuilt','user'), ownerId ref User (null for prebuilt), level, language, topics [String], topicCount, questionCount, createdAt. Index ownerId.
+chunks: noteSetId (indexed), topic, text (80-200 words), keywords [String], hasDefinition Boolean, hasExample Boolean, embedding [Number], useTfidfFallback Boolean.
 questions: noteSetId, chunkId, type enum of 12 values (definition, explain_simply, example, why_purpose, compare, scenario, fill_gap, rapid_fire, challenge, interview_style, star_behavioral, dynamic_followup), text, expectedKeywords [String], difficulty enum(1,2,3). Index noteSetId.
-sessions: studentId (indexed), noteSetId, style enum('Friendly','Standard','Strict','Rapidfire'), mode enum('voice','text'), questionIds [ObjectId], totalScore, status enum('active','paused','completed','aborted'), startedAt, endedAt, timeLimitSec default 900.
-answers: sessionId, questionId, attemptNum default 1, transcript, wpm, fillerCount, fillerMap (Mixed), longPauseCount, avgConfidence, durationSec, contentScore, deliveryScore, finalScore, coaching (Mixed: tips[], missedKeywords[], starFeedback), sayItBetter String. Index {sessionId, questionId, attemptNum}.
+sessions: studentId (indexed), noteSetId, style enum('Friendly','Standard','Strict','Rapidfire'), mode enum('voice','text'), questionIds [ObjectId], questionIndex, remainingSec, pausedAt, promptState, currentPrompt, rootAnswerId, hintLevel, followUpsUsed, ttsSpeed, totalScore, status enum('active','paused','completed','aborted'), startedAt, endedAt, timeLimitSec default 900.
+answers: sessionId, questionId, followUpOf ref Answer (nullable), attemptNum default 1, skipped Boolean, transcript, wpm, fillerCount, fillerMap (Mixed), longPauseCount, avgConfidence, durationSec, scoredMode enum('voice','text'), usedHintLevel default 0, contentScore, deliveryScore, finalScore, coaching (Mixed: tips[], missedKeywords[], starFeedback), sayItBetter String. Index {sessionId, questionId, attemptNum}.
 progressstats: studentId, topic, avgScore, attempts, streakDays, lastSeen. COMPOUND UNIQUE index {studentId, topic}.
 systemconfig (single document, key:'main'): contentWeight 0.6, deliveryWeight 0.4, aiPackMode enum('base','mid','high') default 'base', phraseBanks { openers:[String], reactions:[String], transitions:[String] }, followUpMax { default:1, strict:2 }, silenceEndSec default 1.5, modelPack { name, sha256, importedAt }.
 
 Seeding (config/db.js -> seed function, idempotent):
-- Create SystemConfig 'main' with at least 12 openers, 12 reactions and 12 transitions so anti-repetition works over a 15-question session.
+- Create SystemConfig 'main' with at least 15 openers, 15 reactions and 15 transitions so anti-repetition works over a 15-question session.
 - Create an admin user from SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD if none exists.
 - Add the `npm run seed` script.
 
@@ -194,7 +196,7 @@ Requirements:
 4. Chunking: each chunk is 80-200 words. Merge short paragraphs, split long ones on sentence boundaries. Never cut mid-sentence.
 5. Per chunk compute: keywords (top 5-8 terms by TF-IDF across the note set, stopwords removed, lowercase), hasDefinition (patterns such as "is a", "refers to", "is defined as"), hasExample (patterns such as "for example", "e.g.", code fences).
 6. Embeddings: call aiBridgeService.embed(texts). If the bridge is unavailable store an empty embedding array and mark the chunk so similarity later uses TF-IDF fallback. The upload must NEVER fail because the AI bridge is down.
-7. After chunking, call questionEngine.generateForNoteSet(noteSetId) (built in Phase 4; stub it to return 0 for now and wire it later).
+7. After chunking, call questionEngine.generateForNoteSet(noteSetId) to create the note set's questions.
 8. Response: { noteSet, topicCount, questionCount } so the UI can show "We found 12 topics and 48 possible questions."
 9. Prebuilt notes: load all files in assets/prebuilt-notes/ at seed time as source 'prebuilt' (java-basics.md, python-basics.md, dbms.md, os.md, hr-interview.md, communication.md). Write real starter content (at least 6 headed sections each, with definitions and examples) so questions can be generated.
 10. GET /api/notes (prebuilt + the requester's own), GET /api/notes/:id (with topic list and counts), DELETE /api/notes/:id (owner only, cascades chunks and questions).
@@ -281,7 +283,7 @@ Rules:
 - Else if expectedKeywords were missed: FOLLOWUP asking specifically about the single top missed keyword (highest-weight keyword from the chunk).
 - Else: NEXT with a praising reaction from the phrase tracker.
 - If the student requested a hint, or stayed silent > 6 s initially, the HINT path is used instead (see Phase 7). Hint Ladder content: Level 1 Nudge (topic + first letter style hint), Level 2 Clue (one expected keyword and a related sentence from the chunk), Level 3 Answer (a concise model answer). Hint level never exceeds 3 and a used hint is recorded on the answer (usedHintLevel) so it can reduce the contentScore by 5% per level (document this in code).
-- Follow-up answers are stored as additional attemptNum or linked answers and merged into the question's final score as max(first, followUp) for content only.
+- Follow-up answers are stored as linked answers (`followUpOf`) and merged into the question's content score as max(first, followUp), retaining the original answer's delivery score.
 - Style flavors: Friendly Coach (encouraging, longer pauses allowed), Standard, Strict (2 follow-ups, shorter praise), Rapid-fire (no follow-ups unless the answer is under 5 words, short reactions).
 
 Acceptance checks (unit tests):
@@ -304,6 +306,7 @@ Requirements:
 - Respect the RAM tier from SystemConfig.aiPackMode: for 'base' skip generate() entirely (rule-based Say It Better); for 'mid'/'high' allow it.
 - Wire /api/health to include aiBridge:true|false.
 - Add a tiny mock bridge script (scripts/mockBridge.js on port 8000) that returns fake STT text, a silent short WAV for TTS and random vectors for embed, so developers can test without the real AI module.
+- Run the mock bridge with `npm run mock:bridge`; set `AI_BRIDGE_URL` to override its default address.
 
 Acceptance checks:
 - With the mock bridge running, /api/health shows aiBridge:true; stop it and the app continues to work.
@@ -404,3 +407,79 @@ Final acceptance checklist:
 - Admin CSV export, rubric update and live feed work.
 - Purge-data removes all personal data.
 ```
+
+## Local setup and troubleshooting
+
+Prerequisites: Node.js 18 or newer, npm, and MongoDB running locally. The default MongoDB URL is `mongodb://127.0.0.1:27017/talkready`.
+
+From the `Backend` directory, run:
+
+```powershell
+npm i
+Copy-Item .env.example .env
+npm run seed
+npm run dev
+```
+
+Before seeding, set `JWT_SECRET`, `SEED_ADMIN_EMAIL`, and `SEED_ADMIN_PASSWORD` in `.env`. The API listens on port 5000 by default. Run the optional local AI stub in a separate terminal with `npm run mock:bridge`; it listens on port 8000. Set `AI_BRIDGE_URL` in `.env` to override that address. The backend remains usable when the AI bridge is offline.
+
+Run all built-in Node and Jest tests with `npm test`; run only Jest tests with `npm run test:jest`.
+
+| Problem | Check |
+| --- | --- |
+| MongoDB is unavailable | Start the local MongoDB service and verify `MONGO_URI`; the server starts in degraded mode and retries the connection. |
+| Port 5000 is already in use | Stop the other process or set `PORT` to an available port in `.env`. |
+| AI features report unavailable | Start the mock bridge or configure `AI_BRIDGE_URL`. Notes, scoring, and interviews retain their offline fallbacks. |
+| Admin routes return 403 | Log in with the seeded admin account and send its bearer token. |
+
+## REST API reference
+
+All responses use the `{ "success": true, "data": ... }` or `{ "success": false, "error": ... }` envelope. Protected routes require a bearer JWT; admin routes require the admin role.
+
+| Method | Route | Access | Purpose |
+| --- | --- | --- | --- |
+| GET | `/api/health` | Public | API, MongoDB, and AI bridge status |
+| POST | `/api/auth/register` | Public | Register a student |
+| POST | `/api/auth/login` | Public | Log in and receive a JWT |
+| GET | `/api/auth/me` | Authenticated | Get the current user |
+| PUT | `/api/auth/settings` | Authenticated | Update user settings, including RAM tier |
+| DELETE | `/api/auth/purge-data` | Student | Purge the student's personal data |
+| POST | `/api/notes/upload` | Authenticated | Upload a supported file or pasted notes |
+| GET | `/api/notes` | Authenticated | List prebuilt and owned note sets |
+| GET | `/api/notes/:id` | Authenticated | Get an accessible note set and its topics |
+| DELETE | `/api/notes/:id` | Owner | Delete an owned note set |
+| POST | `/api/interview/start` | Student | Create an interview session over REST |
+| GET | `/api/interview/sessions` | Student | List the student's sessions |
+| GET | `/api/interview/:id/report` | Student | Get the session report |
+| POST | `/api/interview/:id/retry/:qid` | Student | Rescore an answer retry |
+| GET | `/api/progress/me` | Student | Get progress, topic stats, and streak |
+| POST | `/api/drills/score` | Student | Score a skill drill |
+| GET | `/api/admin/analytics` | Admin | Get aggregate analytics and active sessions |
+| GET | `/api/admin/rubric` | Admin | Read rubric and AI configuration |
+| PUT | `/api/admin/rubric` | Admin | Update weights, phrase banks, and model settings |
+| GET | `/api/admin/students` | Admin | List students |
+| GET | `/api/admin/students/:id/history` | Admin | Get a student's session history |
+| GET | `/api/admin/export-csv` | Admin | Stream an Excel-safe CSV export |
+| POST | `/api/admin/notes-pack` | Admin | Upload prebuilt notes |
+| POST | `/api/admin/model-pack` | Admin | Verify and store a model pack |
+
+## Socket.IO event reference
+
+Authenticate the Socket.IO handshake with `auth: { token }`. The `interview:start` acknowledgement returns `{ sessionId }`; emitted states contain the current state and session timing.
+
+| Direction | Event | Purpose / payload |
+| --- | --- | --- |
+| Client -> server | `interview:start` | Start or resume an interview with `{ noteSetId, style, questionCount, mode, sessionId? }` |
+| Client -> server | `interview:tts_done` | Signal that playback of the current prompt or response has finished |
+| Client -> server | `audio:chunk` | Send a PCM16, 16 kHz audio chunk while in voice LISTEN state |
+| Client -> server | `interview:answer_text` | Submit `{ text }` in text mode |
+| Client -> server | `interview:listen_end` | End listening with `{ reason: "silence" \| "manual" }` |
+| Client -> server | `interview:command` | Send repeat, hint, skip, pause, resume, stop, slower, or faster |
+| Server -> client | `interview:state` | State, prompt text, optional audio, coaching, question index, and remaining time |
+| Server -> client | `interview:timer` | Periodic `{ sessionId, remainingSec }` timer update |
+| Server -> client | `interview:transcript` | Partial/final transcript and available word timing/confidence |
+| Server -> client | `interview:error` | Controlled `{ code, message }` for a rejected event |
+| Server -> admin room | `admin:live_feed` | Session, student, question, score, WPM, state, and update time |
+| Socket.IO | `disconnect` | Pauses the active session and clears its timers |
+
+The Postman collection covering the REST routes is available at [docs/TalkReady.postman_collection.json](./docs/TalkReady.postman_collection.json).
